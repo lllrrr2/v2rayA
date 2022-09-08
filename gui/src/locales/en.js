@@ -41,8 +41,17 @@ export default {
     lastTryTime: "Last try time",
     messages: {
       notAllowInsecure:
-        "According to the docs of {name}, if you use {name}, AllowInsecure will be forbidden."
+        "According to the docs of {name}, if you use {name}, AllowInsecure will be forbidden.",
+      notRecommend:
+        "According to the docs of {name}, if you use {name}, AllowInsecure is not recommend."
     }
+  },
+  InSecureConfirm: {
+    title: "Dangerous configuration detected",
+    message:
+      "The configuration has set the <b>AllowInsecure</b> to true. This may cause security risks. Are you sure to continue?",
+    confirm: "I know what I'm doing",
+    cancel: "cancel"
   },
   subscription: {
     host: "Host",
@@ -105,12 +114,12 @@ export default {
     portSharingOn: "Port Sharing",
     concurrency: "Concurrency",
     options: {
-      global: "Proxy All Traffic",
+      global: "Do not Split Traffic",
       direct: "Direct",
       pac: "Depend on Rule Port",
       whitelistCn: "Proxy except CN Sites",
-      gfwlist: "Proxy Only GFWList",
-      sameAsPacMode: "The Same as the Rule Port",
+      gfwlist: "Proxy only GFWList",
+      sameAsPacMode: "Traffic Splitting Mode is the Same as the Rule Port",
       customRouting: "Customized Routing",
       antiDnsHijack: "Prevent DNS Hijack Only (fast)",
       forwardDnsRequest: "Forward DNS Request",
@@ -149,7 +158,11 @@ export default {
                           <p>TCP: {tcpPorts}</p>
                           <p>UDP: {udpPorts}</p>`,
       xtlsNotWithWs: `xtls cannot work with websocket`,
-      grpcShouldWithTls: `gRPC must be with TLS`
+      grpcShouldWithTls: `gRPC must be with TLS`,
+      ssPluginImpl:
+        "★default: 'transport' for simple-obfs, 'chained' for v2ray-plugin." +
+        "★chained: shadowsocks traffic will be redirect to standalone plugin." +
+        "★transport: processed by the transport layer of v2ray/xray core directly."
     }
   },
   customAddressPort: {
@@ -260,7 +273,9 @@ export default {
   version: {
     higherVersionNeeded:
       "This operation need higher version of v2rayA than {version}",
-    v2rayInvalid: "geosite.dat, geoip.dat or v2ray-core may not be installed correctly"
+    v2rayInvalid:
+      "geosite.dat, geoip.dat or v2ray-core may not be installed correctly",
+    lowCoreVersion: "the version of core is too low, unexpected behavior may occur"
   },
   about: `<p>v2rayA is a web GUI client of V2Ray. Frontend is built with Vue.js and backend is built with golang.</p>
           <p class="about-small">Default ports:</p>

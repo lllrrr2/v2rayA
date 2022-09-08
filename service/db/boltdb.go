@@ -1,17 +1,17 @@
 package db
 
 import (
-	"github.com/boltdb/bolt"
+	"go.etcd.io/bbolt"
 	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/pkg/util/copyfile"
-	"log"
+	"github.com/v2rayA/v2rayA/pkg/util/log"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
 var once sync.Once
-var db *bolt.DB
+var db *bbolt.DB
 var readOnly bool
 
 func SetReadOnly() {
@@ -36,13 +36,13 @@ func initDB() {
 	}
 
 	var err error
-	db, err = bolt.Open(dbPath, 0600, nil)
+	db, err = bbolt.Open(dbPath, 0600, nil)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("bbolt.Open: %v", err)
 	}
 }
 
-func DB() *bolt.DB {
+func DB() *bbolt.DB {
 	once.Do(initDB)
 	return db
 }

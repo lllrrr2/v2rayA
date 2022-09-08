@@ -10,7 +10,6 @@ import (
 	"github.com/v2rayA/v2rayA/core/v2ray"
 	"github.com/v2rayA/v2rayA/core/v2ray/asset"
 	"github.com/v2rayA/v2rayA/db/configure"
-	gopeed2 "github.com/v2rayA/v2rayA/pkg/util/gopeed"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
 	"io"
 	"net/http"
@@ -42,20 +41,9 @@ func GetRemoteGFWListUpdateTime(c *http.Client) (gfwlist GFWList, err error) {
 	b, _ := io.ReadAll(resp.Body)
 	defer resp.Body.Close()
 	tag := gjson.GetBytes(b, "0.name").Str
-	u := gjson.GetBytes(b, "0.commit.url").Str
-	if tag == "" || u == "" {
-		err = fmt.Errorf("failed to get latest version of GFWList: fail in getting latest tag")
-		return
-	}
-	resp, err = httpClient.HttpGetUsingSpecificClient(c, u)
+	t, err := time.Parse("200601021504", tag)
 	if err != nil {
-		err = fmt.Errorf("failed to get latest version of GFWList: %w", err)
-		return
-	}
-	b, _ = io.ReadAll(resp.Body)
-	t := gjson.GetBytes(b, "commit.committer.date").Time()
-	if t.IsZero() {
-		err = fmt.Errorf("failed to get latest version of GFWList: fail in getting commit date of latest tag")
+		err = fmt.Errorf("failed to get latest version of GFWList: fail in getting commit date of latest tag: %w", err)
 		return
 	}
 	g.Tag = tag
@@ -100,7 +88,7 @@ var (
 )
 
 func httpGet(url string) (data string, err error) {
-	resp, err := http.Get(url)
+	resp, err := httpClient.GetHttpClientAutomatically().Get(url)
 	if err != nil {
 		return
 	}
@@ -121,10 +109,7 @@ func UpdateLocalGFWList() (localGFWListVersionAfterUpdate string, err error) {
 		return "", err
 	}
 	u := fmt.Sprintf(`https://hubmirror.v2raya.org/v2rayA/dist-v2ray-rules-dat/raw/%v/geosite.dat`, gfwlist.Tag)
-	if err = gopeed2.Down(&gopeed2.Request{
-		Method: "GET",
-		URL:    u,
-	}, pathSiteDat+".new"); err != nil {
+	if err = asset.Download(u, pathSiteDat+".new"); err != nil {
 		log.Warn("UpdateLocalGFWList: %v", err)
 		return
 	}
@@ -135,7 +120,11 @@ func UpdateLocalGFWList() (localGFWListVersionAfterUpdate string, err error) {
 		log.Warn("UpdateLocalGFWList: %v", err)
 		return "", err
 	}
-	if !checkSha256(pathSiteDat+".new", strings.Fields(siteDatSha256)[0]) {
+	var sha256 string
+	if fields := strings.Fields(siteDatSha256); len(fields) != 0 {
+		sha256 = fields[0]
+	}
+	if !checkSha256(pathSiteDat+".new", sha256) {
 		err = fmt.Errorf("UpdateLocalGFWList: %v", DamagedFile)
 		return
 	}

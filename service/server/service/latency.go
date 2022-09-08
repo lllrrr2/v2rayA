@@ -7,7 +7,6 @@ import (
 	"github.com/v2rayA/v2rayA/common/resolv"
 	"github.com/v2rayA/v2rayA/core/coreObj"
 	"github.com/v2rayA/v2rayA/core/serverObj"
-	"github.com/v2rayA/v2rayA/core/specialMode"
 	"github.com/v2rayA/v2rayA/core/v2ray"
 	"github.com/v2rayA/v2rayA/core/v2ray/service"
 	"github.com/v2rayA/v2rayA/db/configure"
@@ -27,9 +26,9 @@ func Ping(which []*configure.Which, timeout time.Duration) (_ []*configure.Which
 	//对要Ping的which去重
 	which = whiches.GetNonDuplicated()
 	//暂时关闭透明代理
-	v2ray.CheckAndStopTransparentProxy()
+	v2ray.ProcessManager.CheckAndStopTransparentProxy(nil)
 	defer func() {
-		if e := v2ray.CheckAndSetupTransparentProxy(true, nil); e != nil {
+		if e := v2ray.ProcessManager.CheckAndSetupTransparentProxy(true, nil); e != nil {
 			err = fmt.Errorf("Ping: %v: %v", e, err)
 		}
 	}()
@@ -95,9 +94,6 @@ func addHosts(tmpl *v2ray.Template, vms []serverObj.ServerObj) {
 }
 
 func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParallel int, showLog bool) ([]*configure.Which, error) {
-	specialMode.StopDNSSupervisor()
-	v2ray.CheckAndStopTransparentProxy()
-
 	var whiches = configure.NewWhiches(which)
 	for i := len(which) - 1; i >= 0; i-- {
 		if which[i].TYPE == configure.SubscriptionType { //去掉subscriptionType
@@ -140,7 +136,7 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 			SpecialMode:   configure.SpecialModeNone,
 			AntiPollution: configure.AntipollutionClosed,
 		})
-		tmpl.SetAPI()
+		tmpl.SetAPI(nil)
 	}
 	inboundPortMap := make([]string, len(vms))
 	pluginPortMap := make(map[int]int)
@@ -158,11 +154,11 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 				port = l.Addr().(*net.TCPAddr).Port
 				break
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 		}
 		v2rayInboundPort := strconv.Itoa(port)
 		pluginPort := 0
-		if v.NeedPlugin() {
+		if v.NeedPluginPort() {
 			// find a port for the plugin
 			for {
 				l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -171,7 +167,7 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 					port = l.Addr().(*net.TCPAddr).Port
 					break
 				}
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(30 * time.Millisecond)
 			}
 			pluginPort = port
 			pluginPortMap[i] = port
@@ -189,7 +185,7 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 	for _, l := range toClose {
 		_ = l.Close()
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
 	tmpl.Routing.DomainStrategy = "AsIs"
 	addHosts(tmpl, vms)
 	tmpl.SetOutboundSockopt()

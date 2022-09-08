@@ -6,7 +6,6 @@ import (
 	jsoniter "github.com/json-iterator/go"
 	jsonIteratorExtra "github.com/json-iterator/go/extra"
 	"github.com/v2rayA/v2rayA/common/netTools/ports"
-	"github.com/v2rayA/v2rayA/common/resolv"
 	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/core/serverObj"
 	"github.com/v2rayA/v2rayA/core/v2ray"
@@ -36,7 +35,7 @@ func checkEnvironment() {
 		config.Report()
 		os.Exit(0)
 	}
-	if !config.PassCheckRoot || config.ResetPassword {
+	if !config.PassCheckRoot {
 		if os.Getegid() != 0 {
 			log.Fatal("Please execute this program with sudo or as a root user for the best experience.\n" +
 				"If you are sure you are root user, use the --passcheckroot parameter to skip the check.\n" +
@@ -47,6 +46,7 @@ func checkEnvironment() {
 		}
 	}
 	if config.ResetPassword {
+		fmt.Println("Config directory:", config.Config)
 		fmt.Println("Resetting password...\nIf no response for a long time, please stop other v2rayA instances and try again.")
 		err := configure.ResetAccounts()
 		if err != nil {
@@ -61,7 +61,7 @@ func checkEnvironment() {
 	}
 	if occupied, sockets, err := ports.IsPortOccupied([]string{v2rayAListeningPort + ":tcp"}); occupied {
 		if err != nil {
-			log.Fatal("netstat:", err)
+			log.Fatal("netstat: %v", err)
 		}
 		for _, socket := range sockets {
 			process, err := socket.Process()
@@ -172,34 +172,6 @@ func migrateServerFormat() {
 }
 
 func initConfigure() {
-	//等待网络连通
-	v2ray.CheckAndStopTransparentProxy()
-	var l net.Listener
-	for {
-		addrs, err := resolv.LookupHost("www.apple.com")
-		if err == nil && len(addrs) > 0 {
-			break
-		}
-		if l == nil {
-			if l, err = net.Listen("tcp", conf.GetEnvironmentConfig().Address); err != nil {
-				log.Fatal("%v", err)
-			}
-			e := gin.New()
-			e.GET("/", func(c *gin.Context) {
-				c.Header("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate")
-				c.Header("Pragma", "no-cache")
-				c.Header("Expires", "0")
-				c.String(200, "Waiting for the network connected; refresh the page later.\n正在等待网络连接，请稍后刷新页面。")
-			})
-			go e.RunListener(l)
-		}
-		log.Alert("waiting for the network connected")
-		time.Sleep(5 * time.Second)
-	}
-	if l != nil {
-		l.Close()
-	}
-	log.Alert("network is connected")
 	//初始化配置
 	jsonIteratorExtra.RegisterFuzzyDecoders()
 
@@ -239,17 +211,36 @@ func initConfigure() {
 	//首先确定v2ray是否存在
 	if _, err := where.GetV2rayBinPath(); err == nil {
 		//检查geoip、geosite是否存在
-		if !asset.DoesV2rayAssetExist("geoip.dat") {
-			err := dat.UpdateLocalGeoIP()
-			if err != nil {
-				log.Fatal("%v", err)
+		if !asset.DoesV2rayAssetExist("geoip.dat") || !asset.DoesV2rayAssetExist("geosite.dat") {
+			log.Alert("downloading missing geoip.dat and geosite.dat")
+			var l net.Listener
+			if l, err = net.Listen("tcp", conf.GetEnvironmentConfig().Address); err != nil {
+				log.Fatal("net.Listen: %v", err)
 			}
-		}
-		if !asset.DoesV2rayAssetExist("geosite.dat") {
-			err = dat.UpdateLocalGeoSite()
-			if err != nil {
-				log.Fatal("%v", err)
+			e := gin.New()
+			e.GET("/", func(c *gin.Context) {
+				c.Header("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate")
+				c.Header("Pragma", "no-cache")
+				c.Header("Expires", "0")
+				c.String(200, "Downloading missing geoip.dat and geosite.dat; refresh the page later.\n正在下载缺失的 geoip.dat 和 geosite.dat，请稍后刷新页面。")
+			})
+			go e.RunListener(l)
+			if !asset.DoesV2rayAssetExist("geoip.dat") {
+				err := dat.UpdateLocalGeoIP()
+				if err != nil {
+					log.Fatal("UpdateLocalGeoIP: %v", err)
+				}
 			}
+			if !asset.DoesV2rayAssetExist("geosite.dat") {
+				err = dat.UpdateLocalGeoSite()
+				if err != nil {
+					log.Fatal("UpdateLocalGeoSite: %v", err)
+				}
+			}
+			if l != nil {
+				l.Close()
+			}
+			log.Alert("geoip.dat and geosite.dat are ready")
 		}
 	}
 }
@@ -370,6 +361,8 @@ func run() (err error) {
 		if err != nil {
 			log.Error("failed to start v2ray-core: %v", err)
 		}
+	} else {
+		log.Info("the core was not running the last time v2rayA exited")
 	}
 	//w := configure.GetConnectedServers()
 	//log.Println(err, ", which:", w)
@@ -390,7 +383,7 @@ func run() (err error) {
 		log.Fatal("run: %v", err)
 	}
 	fmt.Println("Quitting...")
-	v2ray.CheckAndStopTransparentProxy()
+	v2ray.ProcessManager.CheckAndStopTransparentProxy(nil)
 	v2ray.ProcessManager.Stop(false)
 	_ = db.DB().Close()
 	return nil
