@@ -3,11 +3,12 @@ package serverObj
 import (
 	"encoding/base64"
 	"fmt"
-	"github.com/v2rayA/v2rayA/common"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/v2rayA/v2rayA/common"
 )
 
 func init() {
@@ -102,7 +103,7 @@ func ParseSSRURL(u string) (data *ShadowsocksR, err error) {
 		info, ok = parse(content)
 	}
 	if !ok {
-		err = fmt.Errorf("%w: unrecognized ssr address", InvalidParameterErr)
+		err = fmt.Errorf("%w: unrecognized ssr address", ErrInvalidParameter)
 		return
 	}
 	return &info, nil
@@ -113,18 +114,7 @@ func (s *ShadowsocksR) Configuration(info PriorInfo) (c Configuration, err error
 		Scheme: "socks5",
 		Host:   net.JoinHostPort("127.0.0.1", strconv.Itoa(info.PluginPort)),
 	}
-	ssr := url.URL{
-		Scheme: "ssr",
-		Host:   net.JoinHostPort(s.Server, strconv.Itoa(s.Port)),
-		User:   url.UserPassword(s.Cipher, s.Password),
-		RawQuery: url.Values{
-			"proto":      []string{s.Proto},
-			"protoParam": []string{s.ProtoParam},
-			"obfs":       []string{s.Obfs},
-			"obfsParam":  []string{s.ObfsParam},
-		}.Encode(),
-	}
-	chain := []string{socks5.String(), ssr.String()}
+	chain := []string{socks5.String(), s.ExportToURL()}
 	return Configuration{
 		CoreOutbound: info.PluginObj(),
 		PluginChain:  strings.Join(chain, ","),
@@ -149,7 +139,7 @@ func (s *ShadowsocksR) ExportToURL() string {
 	)), "="))
 }
 
-func (s *ShadowsocksR) NeedPlugin() bool {
+func (s *ShadowsocksR) NeedPluginPort() bool {
 	return true
 }
 

@@ -60,18 +60,25 @@ func GetHttpClientWithv2rayAPac() (client *http.Client, err error) {
 	return GetHttpClientWithProxy("http://" + net.JoinHostPort(host, strconv.Itoa(configure.GetPortsNotNil().HttpWithPac)))
 }
 
-func GetHttpClientAutomatically() (c *http.Client, err error) {
-	if !v2ray.ProcessManager.Running() || configure.GetConnectedServers() == nil || v2ray.IsTransparentOn() {
-		return http.DefaultClient, nil
-	}
+func GetHttpClientAutomatically() (c *http.Client) {
 	setting := configure.GetSettingNotNil()
+	if !v2ray.ProcessManager.Running() || configure.GetConnectedServers() == nil || v2ray.IsTransparentOn(setting) {
+		return http.DefaultClient
+	}
+	var err error
 	switch setting.ProxyModeWhenSubscribe {
 	case configure.ProxyModePac:
 		c, err = GetHttpClientWithv2rayAPac()
+		if err != nil {
+			return http.DefaultClient
+		}
 	case configure.ProxyModeProxy:
 		c, err = GetHttpClientWithv2rayAProxy()
+		if err != nil {
+			return http.DefaultClient
+		}
 	default:
 		c = http.DefaultClient
 	}
-	return
+	return c
 }

@@ -2,21 +2,31 @@ package asset
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"runtime"
+	"time"
+
 	"github.com/adrg/xdg"
 	"github.com/muhammadmuzzammil1998/jsonc"
 	"github.com/v2rayA/v2rayA/common/files"
 	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/core/v2ray/where"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
-	"io/fs"
-	"os"
-	"path"
-	"path/filepath"
-	"runtime"
-	"time"
 )
 
 func GetV2rayLocationAssetOverride() string {
+	if assetDir := conf.GetEnvironmentConfig().V2rayAssetsDirectory; assetDir != "" {
+		return assetDir
+	}
+	if assetDir := os.Getenv("V2RAY_LOCATION_ASSET"); assetDir != "" {
+		return assetDir
+	}
 	if runtime.GOOS != "windows" {
 		return filepath.Join(xdg.RuntimeDir, "v2raya")
 	} else {
@@ -132,4 +142,27 @@ func GetV2rayConfigPath() (p string) {
 
 func GetV2rayConfigDirPath() (p string) {
 	return conf.GetEnvironmentConfig().V2rayConfigDirectory
+}
+
+func GetNftablesConfigPath() (p string) {
+	return path.Join(conf.GetEnvironmentConfig().Config, "v2raya.nft")
+}
+
+func Download(url string, to string) (err error) {
+	log.Info("Downloading %v to %v", url, to)
+	c := http.Client{Timeout: 90 * time.Second}
+	resp, err := c.Get(url)
+	if err != nil || resp.StatusCode != 200 {
+		if err == nil {
+			defer resp.Body.Close()
+			err = fmt.Errorf("code: %v %v", resp.StatusCode, resp.Status)
+		}
+		return err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(to, b, 0644)
 }

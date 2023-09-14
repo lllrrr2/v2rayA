@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/shirou/gopsutil/v3/mem"
+	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/core/serverObj"
 	"github.com/v2rayA/v2rayA/core/v2ray/asset"
 	"github.com/v2rayA/v2rayA/core/v2ray/where"
@@ -27,13 +28,17 @@ type Process struct {
 	// mutex protect the proc
 	mutex          sync.Mutex
 	proc           *os.Process
-	procCancel     func()
+	procCancel     func() // cancel func for proc and pluginManagers
+	pluginManagers []*os.Process
 	template       *Template
 	tag2WhichIndex map[string]int
 }
 
-func NewProcess(tmpl *Template) (process *Process, err error) {
-	process = &Process{
+func NewProcess(tmpl *Template,
+	prestart func() error, poststart func() error,
+	postUnexpectedStop func(p *Process),
+) (*Process, error) {
+	process := &Process{
 		template: tmpl,
 	}
 	if tmpl.MultiObservatory != nil {
@@ -45,7 +50,7 @@ func NewProcess(tmpl *Template) (process *Process, err error) {
 		}
 		process.tag2WhichIndex = tag2WhichIndex
 	}
-	err = WriteV2rayConfig(tmpl.ToConfigBytes())
+	err := WriteV2rayConfig(tmpl.ToConfigBytes())
 	if err != nil {
 		return nil, err
 	}
@@ -53,30 +58,62 @@ func NewProcess(tmpl *Template) (process *Process, err error) {
 		return nil, fmt.Errorf("%v", err)
 	}
 	go tmpl.ServePlugins()
+	pCtx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
+	// start PluginManagers
+	if pm := conf.GetEnvironmentConfig().PluginManager; pm != "" {
+		for _, v := range tmpl.PluginManagerInfoList {
+			arguments := []string{
+				pm,
+				"--stage=run",
+				fmt.Sprintf("--link=%v", v.Link),
+				fmt.Sprintf("--port=%v", v.Port),
+				fmt.Sprintf("--v2raya-confdir=%v", conf.GetEnvironmentConfig().Config),
+			}
+			proc, err := RunWithLog(pCtx, pm, arguments, "", os.Environ())
+			if err != nil {
+				// clean
+				for _, pm := range process.pluginManagers {
+					_ = pm.Kill()
+				}
+				process.pluginManagers = nil
+				return nil, fmt.Errorf("executing PluginManager [state: run, link: %v]: %w", v.Link, err)
+			}
+			process.pluginManagers = append(process.pluginManagers, proc)
+		}
+	}
 	defer func() {
 		if err != nil {
 			_ = tmpl.Close()
 		}
 	}()
 	if tmpl.API == nil {
-		tmpl.SetAPI()
+		log.Fatal("unexpected tmpl.API == nil")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
 	process.procCancel = cancel
-	proc, err := StartCoreProcess(ctx)
+	if err = prestart(); err != nil {
+		return nil, err
+	}
+	proc, err := StartCoreProcess(pCtx)
 	if err != nil {
-		cancel()
+		return nil, err
+	}
+	if err = poststart(); err != nil {
 		return nil, err
 	}
 	process.proc = proc
 	var unexpectedExiting bool
 	go func() {
 		p, e := proc.Wait()
-		defer ProcessManager.Stop(false)
 		if process.procCancel == nil {
 			// canceled by v2rayA
 			return
 		}
+		defer postUnexpectedStop(process)
 		var t []string
 		if p != nil {
 			if p.Success() {
@@ -95,11 +132,11 @@ func NewProcess(tmpl *Template) (process *Process, err error) {
 	for _, plu := range tmpl.Plugins {
 		_, port, err := net.SplitHostPort(plu.ListenAddr())
 		if err != nil {
-			cancel()
 			return nil, err
 		}
 		portList = append(portList, port)
 	}
+	log.Trace("portList for connectivity test: %+v", portList)
 	startTime := time.Now()
 	for i := 0; i < len(portList); {
 		conn, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", portList[i]))
@@ -109,17 +146,15 @@ func NewProcess(tmpl *Template) (process *Process, err error) {
 			continue
 		}
 		if unexpectedExiting {
-			cancel()
 			if log.Log.GetLevel() > log.ParseLevel("info") {
 				log.Error("some critical information may lost due to your log level")
 			}
 			return nil, fmt.Errorf("unexpected exiting: check the log for more information")
 		}
 		if time.Since(startTime) > 15*time.Second {
-			cancel()
 			return nil, fmt.Errorf("timeout: check the log for more information")
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	log.Trace("Cost of waiting for v2ray-core: %v", time.Since(startTime).String())
 	return process, nil
@@ -206,6 +241,7 @@ func StartCoreProcess(ctx context.Context) (*os.Process, error) {
 	env := append(
 		os.Environ(),
 		"V2RAY_LOCATION_ASSET="+assetDir,
+		"XRAY_LOCATION_ASSET="+assetDir,
 	)
 	memstat, err := mem.VirtualMemory()
 	if err != nil {
@@ -226,7 +262,7 @@ func StartCoreProcess(ctx context.Context) (*os.Process, error) {
 func findAvailablePluginPorts(vms []serverObj.ServerObj) (pluginPortMap map[int]int, err error) {
 	pluginPortMap = make(map[int]int)
 	for i, v := range vms {
-		if !v.NeedPlugin() {
+		if !v.NeedPluginPort() {
 			continue
 		}
 		//find a port that not be occupied
@@ -238,7 +274,7 @@ func findAvailablePluginPorts(vms []serverObj.ServerObj) (pluginPortMap map[int]
 				port = l.Addr().(*net.TCPAddr).Port
 				break
 			}
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(30 * time.Millisecond)
 		}
 		pluginPortMap[i] = port
 	}

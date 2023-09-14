@@ -3,20 +3,21 @@ package service
 import (
 	"errors"
 	"fmt"
-	"github.com/v2rayA/v2rayA/common/httpClient"
-	"github.com/v2rayA/v2rayA/common/resolv"
-	"github.com/v2rayA/v2rayA/core/coreObj"
-	"github.com/v2rayA/v2rayA/core/serverObj"
-	"github.com/v2rayA/v2rayA/core/specialMode"
-	"github.com/v2rayA/v2rayA/core/v2ray"
-	"github.com/v2rayA/v2rayA/db/configure"
-	"github.com/v2rayA/v2rayA/pkg/util/log"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/v2rayA/v2rayA/common/httpClient"
+	"github.com/v2rayA/v2rayA/common/resolv"
+	"github.com/v2rayA/v2rayA/core/coreObj"
+	"github.com/v2rayA/v2rayA/core/serverObj"
+	"github.com/v2rayA/v2rayA/core/v2ray"
+	"github.com/v2rayA/v2rayA/db/configure"
+	"github.com/v2rayA/v2rayA/pkg/util/log"
 )
 
 const HttpTestURL = "https://gstatic.com/generate_204"
@@ -26,9 +27,9 @@ func Ping(which []*configure.Which, timeout time.Duration) (_ []*configure.Which
 	//对要Ping的which去重
 	which = whiches.GetNonDuplicated()
 	//暂时关闭透明代理
-	v2ray.CheckAndStopTransparentProxy()
+	v2ray.ProcessManager.CheckAndStopTransparentProxy(nil)
 	defer func() {
-		if e := v2ray.CheckAndSetupTransparentProxy(true, nil); e != nil {
+		if e := v2ray.ProcessManager.CheckAndSetupTransparentProxy(true, nil); e != nil {
 			err = fmt.Errorf("Ping: %v: %v", e, err)
 		}
 	}()
@@ -90,9 +91,6 @@ func addHosts(tmpl *v2ray.Template, vms []serverObj.ServerObj) {
 }
 
 func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParallel int, showLog bool) ([]*configure.Which, error) {
-	specialMode.StopDNSSupervisor()
-	v2ray.CheckAndStopTransparentProxy()
-
 	var whiches = configure.NewWhiches(which)
 	for i := len(which) - 1; i >= 0; i-- {
 		if which[i].TYPE == configure.SubscriptionType { //去掉subscriptionType
@@ -135,38 +133,56 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 			SpecialMode:   configure.SpecialModeNone,
 			AntiPollution: configure.AntipollutionClosed,
 		})
-		tmpl.SetAPI()
+		tmpl.SetAPI(nil)
 	}
 	inboundPortMap := make([]string, len(vms))
 	pluginPortMap := make(map[int]int)
-	var toClose []net.Listener
+	var toClose []io.Closer
+	defer func() {
+		for _, l := range toClose {
+			_ = l.Close()
+		}
+	}()
 	for i, v := range vms {
 		if which[i].Latency != "" {
 			continue
 		}
 		//find a port for the inbound
+		t := time.Now()
 		var port int
 		for {
 			l, err := net.Listen("tcp", "0.0.0.0:0")
 			if err == nil {
-				toClose = append(toClose, l)
 				port = l.Addr().(*net.TCPAddr).Port
-				break
+				toClose = append(toClose, l)
+				l2, err2 := net.ListenPacket("udp", "0.0.0.0:"+strconv.Itoa(port))
+				if err2 == nil {
+					toClose = append(toClose, l2)
+					break
+				}
 			}
-			time.Sleep(100 * time.Millisecond)
+			if time.Since(t) > 3*time.Second {
+				return nil, fmt.Errorf("timeout: failed to find availble ports")
+			}
 		}
 		v2rayInboundPort := strconv.Itoa(port)
 		pluginPort := 0
-		if v.NeedPlugin() {
+		if v.NeedPluginPort() {
 			// find a port for the plugin
 			for {
 				l, err := net.Listen("tcp", "127.0.0.1:0")
 				if err == nil {
 					toClose = append(toClose, l)
 					port = l.Addr().(*net.TCPAddr).Port
-					break
+					l2, err2 := net.ListenPacket("udp", "127.0.0.1:"+strconv.Itoa(port))
+					if err2 == nil {
+						toClose = append(toClose, l2)
+						break
+					}
 				}
-				time.Sleep(100 * time.Millisecond)
+				if time.Since(t) > 3*time.Second {
+					return nil, fmt.Errorf("timeout: failed to find availble ports")
+				}
 			}
 			pluginPort = port
 			pluginPortMap[i] = port
@@ -184,11 +200,11 @@ func TestHttpLatency(which []*configure.Which, timeout time.Duration, maxParalle
 	for _, l := range toClose {
 		_ = l.Close()
 	}
-	time.Sleep(100 * time.Millisecond)
+	toClose = nil
+	time.Sleep(30 * time.Millisecond)
 	tmpl.Routing.DomainStrategy = "AsIs"
 	addHosts(tmpl, vms)
 	tmpl.SetOutboundSockopt()
-
 	if err := v2ray.ProcessManager.Start(tmpl); err != nil {
 		return nil, err
 	}

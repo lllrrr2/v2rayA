@@ -2,16 +2,17 @@ package v2ray
 
 import (
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/v2rayA/v2rayA/conf"
 	"github.com/v2rayA/v2rayA/core/iptables"
 	"github.com/v2rayA/v2rayA/core/specialMode"
 	"github.com/v2rayA/v2rayA/db/configure"
 	"github.com/v2rayA/v2rayA/pkg/util/log"
-	"strings"
-	"time"
 )
 
-func DeleteTransparentProxyRules() {
+func deleteTransparentProxyRules() {
 	iptables.CloseWatcher()
 	if !conf.GetEnvironmentConfig().Lite {
 		removeResolvHijacker()
@@ -20,14 +21,14 @@ func DeleteTransparentProxyRules() {
 		iptables.DropSpoofing.GetCleanCommands().Run(false)
 	}
 	iptables.SystemProxy.GetCleanCommands().Run(false)
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
 }
 
-func WriteTransparentProxyRules() (err error) {
+func writeTransparentProxyRules() (err error) {
 	defer func() {
 		if err != nil {
-			log.Warn("WriteTransparentProxyRules: %v", err)
-			DeleteTransparentProxyRules()
+			log.Warn("writeTransparentProxyRules: %v", err)
+			deleteTransparentProxyRules()
 		}
 	}()
 	if specialMode.ShouldUseSupervisor() {
@@ -45,12 +46,12 @@ func WriteTransparentProxyRules() (err error) {
 			}
 			return fmt.Errorf("not support \"tproxy\" mode of transparent proxy: %w", err)
 		}
-		iptables.SetWatcher(&iptables.Tproxy)
+		iptables.SetWatcher(iptables.Tproxy)
 	case configure.TransparentRedirect:
 		if err = iptables.Redirect.GetSetupCommands().Run(true); err != nil {
 			return fmt.Errorf("not support \"redirect\" mode of transparent proxy: %w", err)
 		}
-		iptables.SetWatcher(&iptables.Redirect)
+		iptables.SetWatcher(iptables.Redirect)
 	case configure.TransparentSystemProxy:
 		if err = iptables.SystemProxy.GetSetupCommands().Run(true); err != nil {
 			return fmt.Errorf("not support \"system proxy\" mode of transparent proxy: %w", err)
@@ -68,34 +69,16 @@ func WriteTransparentProxyRules() (err error) {
 		} else if specialMode.ShouldUseFakeDns() {
 			return fmt.Errorf("fakedns cannot be enabled: %w", e)
 		} else {
-			log.Warn("WriteTransparentProxyRules: %v", e)
+			log.Warn("writeTransparentProxyRules: %v", e)
 		}
 	}
 	return nil
 }
 
-func CheckAndSetupTransparentProxy(checkRunning bool, setting *configure.Setting) (err error) {
-	if setting != nil {
-		setting.FillEmpty()
-	} else {
+func IsTransparentOn(setting *configure.Setting) bool {
+	if setting == nil {
 		setting = configure.GetSettingNotNil()
 	}
-	if (!checkRunning || ProcessManager.Running()) && setting.Transparent != configure.TransparentClose {
-		DeleteTransparentProxyRules()
-		if !IsTransparentOn() {
-			return nil
-		}
-		err = WriteTransparentProxyRules()
-	}
-	return
-}
-
-func CheckAndStopTransparentProxy() {
-	DeleteTransparentProxyRules()
-}
-
-func IsTransparentOn() bool {
-	setting := configure.GetSettingNotNil()
 	if setting.Transparent == configure.TransparentClose {
 		return false
 	}

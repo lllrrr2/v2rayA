@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/v2rayA/v2rayA/conf"
+
 	"github.com/v2rayA/v2rayA/common"
 	"github.com/v2rayA/v2rayA/common/httpClient"
 	"github.com/v2rayA/v2rayA/common/resolv"
@@ -15,12 +17,21 @@ import (
 	"github.com/v2rayA/v2rayA/db/configure"
 )
 
+func PluginManagerValidateLink(url string) bool {
+	if pm := conf.GetEnvironmentConfig().PluginManager; pm != "" {
+		_, err := serverObj.NewFromLink(serverObj.PluginManagerScheme, url)
+		return err == nil
+	} else {
+		return false
+	}
+}
+
 func Import(url string, which *configure.Which) (err error) {
 	//log.Trace(url)
 	resolv.CheckResolvConf()
 	url = strings.TrimSpace(url)
-	if lines := strings.Split(url, "\n"); len(lines) >= 2 {
-		infos, _, err := ResolveLines(url)
+	if lines := strings.Split(url, "\n"); len(lines) >= 2 || strings.HasPrefix(url, "{") {
+		infos, _, err := ResolveByLines(url)
 		if err != nil {
 			return fmt.Errorf("failed to resolve addresses: %w", err)
 		}
@@ -29,15 +40,12 @@ func Import(url string, which *configure.Which) (err error) {
 		}
 		return err
 	}
-	if strings.HasPrefix(url, "vmess://") ||
-		strings.HasPrefix(url, "vless://") ||
-		strings.HasPrefix(url, "ss://") ||
-		strings.HasPrefix(url, "ssr://") ||
-		strings.HasPrefix(url, "trojan://") ||
-		strings.HasPrefix(url, "trojan-go://") ||
-		strings.HasPrefix(url, "http-proxy://") ||
-		strings.HasPrefix(url, "https-proxy://") ||
-		strings.HasPrefix(url, "http2://") {
+	supportedPrefix := []string{"vmess", "vless", "ss", "ssr", "trojan", "trojan-go", "http-proxy",
+		"https-proxy", "socks5", "http2", "juicity", "tuic"}
+	for i := range supportedPrefix {
+		supportedPrefix[i] += "://"
+	}
+	if PluginManagerValidateLink(url) || common.HasAnyPrefix(url, supportedPrefix) {
 		var obj serverObj.ServerObj
 		obj, err = ResolveURL(url)
 		if err != nil {
@@ -86,13 +94,8 @@ func Import(url string, which *configure.Which) (err error) {
 				u.Scheme = "http"
 				source = u.String()
 			}
-		} else {
-			// maybe it is a OOCv1 token
 		}
-		c, err := httpClient.GetHttpClientAutomatically()
-		if err != nil {
-			return err
-		}
+		c := httpClient.GetHttpClientAutomatically()
 		c.Timeout = 90 * time.Second
 		infos, status, err := ResolveSubscriptionWithClient(source, c)
 		if err != nil {

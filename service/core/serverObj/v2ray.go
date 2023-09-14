@@ -3,15 +3,20 @@ package serverObj
 import (
 	"encoding/base64"
 	"fmt"
-	jsoniter "github.com/json-iterator/go"
-	"github.com/v2rayA/v2rayA/common"
-	"github.com/v2rayA/v2rayA/core/coreObj"
-	"github.com/v2rayA/v2rayA/pkg/util/log"
 	"net"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	jsoniter "github.com/json-iterator/go"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+	"github.com/v2rayA/v2rayA/common"
+	"github.com/v2rayA/v2rayA/common/ntp"
+	"github.com/v2rayA/v2rayA/core/coreObj"
+	"github.com/v2rayA/v2rayA/pkg/util/log"
 )
 
 func init() {
@@ -31,11 +36,17 @@ type V2Ray struct {
 	Port          string `json:"port"`
 	ID            string `json:"id"`
 	Aid           string `json:"aid"`
-	Net           string `json:"net,omitempty"`
-	Type          string `json:"type,omitempty"`
-	Host          string `json:"host,omitempty"`
-	Path          string `json:"path,omitempty"`
-	TLS           string `json:"tls,omitempty"`
+	Security      string `json:"scy"`
+	Net           string `json:"net"`
+	Type          string `json:"type"`
+	Host          string `json:"host"`
+	SNI           string `json:"sni,omitempty"`
+	Path          string `json:"path"`
+	TLS           string `json:"tls"`
+	Fingerprint   string `json:"fingerprint,omitempty"`
+	PublicKey     string `json:"pbk,omitempty"`
+	ShortId       string `json:"sid,omitempty"`
+	SpiderX       string `json:"spx,omitempty"`
 	Flow          string `json:"flow,omitempty"`
 	Alpn          string `json:"alpn,omitempty"`
 	AllowInsecure bool   `json:"allowInsecure"`
@@ -49,7 +60,7 @@ func NewV2Ray(link string) (ServerObj, error) {
 	} else if strings.HasPrefix(link, "vless://") {
 		return ParseVlessURL(link)
 	}
-	return nil, InvalidParameterErr
+	return nil, ErrInvalidParameter
 }
 
 func ParseVlessURL(vless string) (data *V2Ray, err error) {
@@ -58,18 +69,26 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 		return nil, err
 	}
 	data = &V2Ray{
-		Ps:       u.Fragment,
-		Add:      u.Hostname(),
-		Port:     u.Port(),
-		ID:       u.User.String(),
-		Net:      u.Query().Get("type"),
-		Type:     u.Query().Get("headerType"),
-		Host:     u.Query().Get("sni"),
-		Path:     u.Query().Get("path"),
-		TLS:      u.Query().Get("security"),
-		Flow:     u.Query().Get("flow"),
-		Alpn:     u.Query().Get("alpn"),
-		Protocol: "vless",
+		Ps:            u.Fragment,
+		Add:           u.Hostname(),
+		Port:          u.Port(),
+		ID:            u.User.String(),
+		Aid:           u.Query().Get("aid"),
+		Net:           u.Query().Get("type"),
+		Type:          u.Query().Get("headerType"),
+		Host:          u.Query().Get("host"),
+		SNI:           u.Query().Get("sni"),
+		Path:          u.Query().Get("path"),
+		TLS:           u.Query().Get("security"),
+		Fingerprint:   u.Query().Get("fp"),
+		PublicKey:     u.Query().Get("pbk"),
+		ShortId:       u.Query().Get("sid"),
+		SpiderX:       u.Query().Get("spx"),
+		Flow:          u.Query().Get("flow"),
+		Alpn:          u.Query().Get("alpn"),
+		AllowInsecure: u.Query().Get("allowInsecure") == "true",
+		V:             vless,
+		Protocol:      "vless",
 	}
 	if data.Net == "" {
 		data.Net = "tcp"
@@ -86,10 +105,7 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if data.TLS == "" {
 		data.TLS = "none"
 	}
-	if data.Flow == "" {
-		data.Flow = "xtls-rprx-direct"
-	}
-	if data.Type == "mkcp" || data.Type == "kcp" {
+	if data.Net == "mkcp" || data.Net == "kcp" {
 		data.Path = u.Query().Get("seed")
 	}
 	return data, nil
@@ -113,7 +129,7 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 		s := strings.Split(vmess[8:], "?")[0]
 		s, err = common.Base64StdDecode(s)
 		if err != nil {
-			s, err = common.Base64URLDecode(s)
+			s, _ = common.Base64URLDecode(s)
 		}
 		subMatch := re.FindStringSubmatch(s)
 		if subMatch == nil {
@@ -139,6 +155,11 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 		if aid == "" {
 			aid = q.Get("aid")
 		}
+		security := q.Get("scy")
+		if security == "" {
+			security = q.Get("security")
+		}
+		sni := q.Get("sni")
 		info = V2Ray{
 			ID:            subMatch[1],
 			Add:           subMatch[2],
@@ -146,8 +167,10 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 			Ps:            ps,
 			Host:          obfsParam,
 			Path:          path,
+			SNI:           sni,
 			Net:           obfs,
 			Aid:           aid,
+			Security:      security,
 			TLS:           map[string]string{"1": "tls"}[q.Get("tls")],
 			AllowInsecure: false,
 		}
@@ -155,6 +178,12 @@ func ParseVmessURL(vmess string) (data *V2Ray, err error) {
 			info.Net = "ws"
 		}
 	} else {
+		// fuzzily parse allowInsecure
+		if allowInsecure := gjson.Get(raw, "allowInsecure"); allowInsecure.Exists() {
+			if newRaw, err := sjson.Set(raw, "allowInsecure", allowInsecure.Bool()); err == nil {
+				raw = newRaw
+			}
+		}
 		err = jsoniter.Unmarshal([]byte(raw), &info)
 		if err != nil {
 			return
@@ -181,11 +210,27 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 	switch strings.ToLower(v.Protocol) {
 	case "vmess", "vless":
 		id := v.ID
+		network := v.Net
 		if l := len([]byte(id)); l < 32 || l > 36 {
 			id = common.StringToUUID5(id)
 		}
+		core.StreamSettings = &coreObj.StreamSettings{
+			Network: network,
+		}
 		switch strings.ToLower(v.Protocol) {
 		case "vmess":
+			if ok, t, err := ntp.IsDatetimeSynced(); err == nil && !ok {
+				return Configuration{}, fmt.Errorf("please sync datetime first. Your datetime is %v, and the "+
+					"correct datetime is %v", time.Now().Local().Format(ntp.DisplayFormat), t.Local().Format(ntp.DisplayFormat))
+			}
+			security := v.Security
+			if security == "" {
+				security = "auto"
+			}
+			var aid int
+			if _aid, err := strconv.Atoi(v.Aid); err == nil {
+				aid = _aid
+			}
 			core.Settings.Vnext = []coreObj.Vnext{
 				{
 					Address: v.Add,
@@ -193,38 +238,49 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 					Users: []coreObj.User{
 						{
 							ID:       id,
-							AlterID:  0,
-							Security: "auto",
+							AlterID:  aid,
+							Security: security,
 						},
 					},
 				},
 			}
 		case "vless":
+			security := v.Security
+			if security == "" {
+				security = "auto"
+			}
 			core.Settings.Vnext = []coreObj.Vnext{
 				{
 					Address: v.Add,
 					Port:    port,
 					Users: []coreObj.User{
 						{
-							ID: id,
-							//AlterID:    0, // keep AEAD on
+							ID:         id,
 							Encryption: "none",
 						},
 					},
 				},
 			}
-		}
-		core.StreamSettings = &coreObj.StreamSettings{
-			Network: v.Net,
+			// if network == "tcp" {
+			// 	tcpSetting := coreObj.TCPSettings{
+			// 		Header: coreObj.TCPHeader{
+			// 			Type: "none",
+			// 		},
+			// 	}
+			// 	core.StreamSettings.TCPSettings = &tcpSetting
+			// }
 		}
 		// 根据传输协议(network)修改streamSettings
 		//TODO: QUIC
 		switch strings.ToLower(v.Net) {
 		case "grpc":
+			if v.Path == "" {
+				v.Path = "GunService"
+			}
 			core.StreamSettings.GrpcSettings = &coreObj.GrpcSettings{ServiceName: v.Path}
 		case "ws":
 			core.StreamSettings.WsSettings = &coreObj.WsSettings{
-				Path:            v.Path,
+				Path: v.Path,
 				Headers: coreObj.Headers{
 					Host: v.Host,
 				},
@@ -299,6 +355,8 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 					Path: v.Path,
 				}
 			}
+		default:
+			return Configuration{}, fmt.Errorf("unexpected transport type: %v", v.Net)
 		}
 		if strings.ToLower(v.TLS) == "tls" {
 			core.StreamSettings.Security = "tls"
@@ -307,7 +365,9 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 				core.StreamSettings.TLSSettings.AllowInsecure = true
 			}
 			// SNI
-			if v.Host != "" {
+			if v.SNI != "" {
+				core.StreamSettings.TLSSettings.ServerName = v.SNI
+			} else if v.Host != "" {
 				core.StreamSettings.TLSSettings.ServerName = v.Host
 			}
 			// Alpn
@@ -318,15 +378,19 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 				}
 				core.StreamSettings.TLSSettings.Alpn = alpn
 			}
+			// uTLS fingerprint
+			core.StreamSettings.TLSSettings.Fingerprint = v.Fingerprint
 		} else if strings.ToLower(v.TLS) == "xtls" {
 			core.StreamSettings.Security = "xtls"
 			core.StreamSettings.XTLSSettings = &coreObj.TLSSettings{}
 			// SNI
-			if v.Host != "" {
+			if v.SNI != "" {
+				core.StreamSettings.XTLSSettings.ServerName = v.SNI
+			} else if v.Host != "" {
 				core.StreamSettings.XTLSSettings.ServerName = v.Host
 			}
-			if v.Flow == "" {
-				v.Flow = "xtls-rprx-origin"
+			if v.AllowInsecure {
+				core.StreamSettings.XTLSSettings.AllowInsecure = true
 			}
 			if v.Alpn != "" {
 				alpn := strings.Split(v.Alpn, ",")
@@ -335,6 +399,19 @@ func (v *V2Ray) Configuration(info PriorInfo) (c Configuration, err error) {
 				}
 				core.StreamSettings.XTLSSettings.Alpn = alpn
 			}
+		} else if strings.ToLower(v.TLS) == "reality" {
+			core.StreamSettings.Security = "reality"
+			core.StreamSettings.RealitySettings = &coreObj.RealitySettings{
+				ServerName:  v.SNI,
+				Fingerprint: v.Fingerprint,
+				Show:        false,
+				PublicKey:   v.PublicKey,
+				ShortID:     v.ShortId,
+				SpiderX:     v.SpiderX,
+			}
+		}
+		// Flow
+		if v.Flow != "" {
 			vnext := core.Settings.Vnext.([]coreObj.Vnext)
 			vnext[0].Users[0].Flow = v.Flow
 			core.Settings.Vnext = vnext
@@ -368,13 +445,17 @@ func (v *V2Ray) ExportToURL() string {
 		case "grpc":
 			setValue(&query, "serviceName", v.Path)
 		}
-		//TODO: QUIC
 		if v.TLS != "none" {
-			setValue(&query, "sni", v.Host) // FIXME: it may be different from ws's host
-			setValue(&query, "alpn", v.Alpn)
-		}
-		if v.TLS == "xtls" {
 			setValue(&query, "flow", v.Flow)
+			setValue(&query, "sni", v.SNI)
+			setValue(&query, "alpn", v.Alpn)
+			setValue(&query, "allowInsecure", strconv.FormatBool(v.AllowInsecure))
+			setValue(&query, "fp", v.Fingerprint)
+			if v.TLS == "reality" {
+				setValue(&query, "pbk", v.PublicKey)
+				setValue(&query, "sid", v.ShortId)
+				setValue(&query, "spx", v.SpiderX)
+			}
 		}
 
 		U := url.URL{
@@ -394,7 +475,7 @@ func (v *V2Ray) ExportToURL() string {
 	return ""
 }
 
-func (v *V2Ray) NeedPlugin() bool {
+func (v *V2Ray) NeedPluginPort() bool {
 	return false
 }
 

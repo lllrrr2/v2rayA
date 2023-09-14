@@ -1,8 +1,8 @@
 package where
 
 import (
+	"bytes"
 	"fmt"
-	"github.com/v2rayA/v2rayA/conf"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/v2rayA/v2rayA/conf"
 )
 
 type Variant string
@@ -21,32 +23,12 @@ const (
 )
 
 var NotFoundErr = fmt.Errorf("not found")
-var ServiceNameList = []string{"v2ray"}
+var ServiceNameList = []string{"xray", "v2ray"}
 var v2rayVersion struct {
 	variant    Variant
 	version    string
 	lastUpdate time.Time
 	mu         sync.Mutex
-}
-
-type onceWriter struct {
-	buf      []byte
-	callback func(buf []byte)
-}
-
-func newOnceWriter(callback func(buf []byte)) *onceWriter {
-	return &onceWriter{
-		callback: callback,
-	}
-}
-
-func (r *onceWriter) Write(p []byte) (n int, err error) {
-	defer func() {
-		go r.callback(r.buf)
-	}()
-	r.buf = make([]byte, len(p))
-	copy(r.buf, p)
-	return len(p), nil
 }
 
 /* get the version of v2ray-core without 'v' like 4.23.1 */
@@ -61,26 +43,23 @@ func GetV2rayServiceVersion() (variant Variant, ver string, err error) {
 	if err != nil || len(v2rayPath) <= 0 {
 		return Unknown, "", fmt.Errorf("cannot find v2ray executable binary")
 	}
-	var output []byte
-	var done = make(chan struct{}, 2)
 	cmd := exec.Command(v2rayPath, "version")
-	cmd.Stdout = newOnceWriter(func(buf []byte) {
-		output = buf
-		done <- struct{}{}
-	})
-	cmd.Stderr = cmd.Stdout
+	output := bytes.NewBuffer(nil)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	go func() {
+		time.Sleep(5 * time.Second)
+		p := cmd.Process
+		if p != nil {
+			_ = p.Kill()
+		}
+	}()
 	if err := cmd.Start(); err != nil {
 		return Unknown, "", err
 	}
-	go func() {
-		time.Sleep(3 * time.Second)
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-		done <- struct{}{}
-	}()
-	<-done
+	cmd.Wait()
 	var fields []string
-	if fields = strings.Fields(strings.TrimSpace(string(output))); len(fields) < 2 {
+	if fields = strings.Fields(strings.TrimSpace(output.String())); len(fields) < 2 {
 		return Unknown, "", fmt.Errorf("cannot parse version of v2ray")
 	}
 	ver = fields[1]
